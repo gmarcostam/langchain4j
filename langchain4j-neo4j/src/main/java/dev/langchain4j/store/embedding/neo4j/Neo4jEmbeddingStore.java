@@ -21,7 +21,6 @@ import java.util.stream.Stream;
 
 import static dev.langchain4j.internal.Utils.*;
 import static dev.langchain4j.internal.ValidationUtils.*;
-import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 
 import org.neo4j.driver.Driver;
@@ -61,7 +60,7 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
     private final Set<String> notMetaKeys;
 
     /**
-     * Creates an instance of Neo4jEmbeddingStore defining a {@link Driver} 
+     * Creates an instance of Neo4jEmbeddingStore defining a {@link Driver}
      * starting from uri, user and password
      */
     public static class Neo4jEmbeddingStoreBuilder {
@@ -82,7 +81,7 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
      * @param textProperty: the optional textProperty property name (default: "text")
      * @param indexName: the optional index name (default: "vector")
      * @param databaseName: the optional database name (default: "neo4j")
-     * @param retrievalQuery: the optional retrieval query 
+     * @param retrievalQuery: the optional retrieval query
      *                        (default: "RETURN properties(node) AS metadata, node.`idProperty` AS `idProperty`, node.`textProperty` AS `textProperty`, node.`embeddingProperty` AS `embeddingProperty`, score")
      */
     @Builder
@@ -99,7 +98,7 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
             String databaseName,
             String retrievalQuery,
             long awaitIndexTimeout) {
-        
+
         /* required configs */
         this.driver = ensureNotNull(driver, "driver");
         this.dimension = ensureBetween(dimension, 0, 4096, "dimension");
@@ -133,9 +132,9 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
                 this.sanitizedIdProperty, this.sanitizedText, this.sanitizedEmbeddingProperty
         );
         this.retrievalQuery = getOrDefault(retrievalQuery, defaultRetrievalQuery);
-        
+
         this.notMetaKeys = new HashSet<>(Arrays.asList(this.idProperty, this.embeddingProperty, this.textProperty));
-        
+
         /* auto-schema creation */
         createSchema();
     }
@@ -143,7 +142,7 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
     /*
     Methods with `@Override`
     */
-    
+
     @Override
     public String add(Embedding embedding) {
         String id = randomUUID();
@@ -180,13 +179,13 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
                     "maxResults", request.maxResults());
 
             List<EmbeddingMatch<TextSegment>> matches = session
-                .run("""
+                    .run("""
                         CALL db.index.vector.queryNodes($indexName, $maxResults, $embeddingValue)
                         YIELD node, score
                         WHERE score >= $minScore
                         """ + retrievalQuery,
-                    params)
-                .list(item -> toEmbeddingMatch(this, item));
+                            params)
+                    .list(item -> toEmbeddingMatch(this, item));
 
             return new EmbeddingSearchResult<>(matches);
         }
@@ -217,24 +216,24 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
 
         try (var session = session()) {
             rowsBatched.forEach(rows -> {
-                    String statement = """
+                String statement = """
                                 UNWIND $rows AS row
                                 MERGE (u:%1$s {%2$s: row.%2$s})
                                 SET u += row.%3$s
                                 WITH row, u
                                 CALL db.create.setNodeVectorProperty(u, $embeddingProperty, row.%4$s)
                                 RETURN count(*)""".formatted(
-                            this.sanitizedLabel,
-                            this.sanitizedIdProperty,
-                            PROPS,
-                            EMBEDDINGS_ROW_KEY);
-                    
-                    Map<String, Object> params = Map.of(
-                            "rows", rows,
-                            "embeddingProperty", this.embeddingProperty
-                    );
-    
-                    session.executeWrite(tx -> tx.run(statement, params).consume());
+                        this.sanitizedLabel,
+                        this.sanitizedIdProperty,
+                        PROPS,
+                        EMBEDDINGS_ROW_KEY);
+
+                Map<String, Object> params = Map.of(
+                        "rows", rows,
+                        "embeddingProperty", this.embeddingProperty
+                );
+
+                session.executeWrite(tx -> tx.run(statement, params).consume());
             });
         }
     }
@@ -269,9 +268,9 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
                     .get("labelsOrTypes")
                     .asList(Value::asString);
             List<Object> idxProps = record.get("properties").asList();
-            
-            boolean isIndexDifferent = !idxLabels.equals(singletonList(this.label)) 
-                                       || !idxProps.equals(singletonList(this.embeddingProperty));
+
+            boolean isIndexDifferent = !idxLabels.equals(singletonList(this.label))
+                    || !idxProps.equals(singletonList(this.embeddingProperty));
             if (isIndexDifferent) {
                 String errMessage = String.format("""
                                 It's not possible to create an index for the label `%s` and the property `%s`,
@@ -296,10 +295,16 @@ public class Neo4jEmbeddingStore implements EmbeddingStore<TextSegment> {
 
         // create vector index
         try (var session = session()) {
-            session.run("CALL db.index.vector.createNodeIndex($indexName, $label, $embeddingProperty, $dimension, 'cosine')",
-                    params);
+            String query = "CREATE VECTOR INDEX " + indexName + " IF NOT EXISTS\n" +
+                    "                    FOR (m:" + sanitizeOrThrows(label, "ignore") + ") ON m."+ embeddingProperty +"\n" +
+                    "                    OPTIONS { indexConfig: {\n" +
+                    "                     `vector.dimensions`: "+ dimension +",\n" +
+                    "                     `vector.similarity_function`: 'cosine'\n" +
+                    "                    }}";
 
-            session.run("CALL db.awaitIndexes($timeout)", 
+            session.run(query, params);
+
+            session.run("CALL db.awaitIndexes($timeout)",
                     Map.of("timeout", awaitIndexTimeout)
             ).consume();
         }
